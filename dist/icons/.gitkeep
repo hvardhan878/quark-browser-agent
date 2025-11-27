@@ -1,0 +1,4 @@
+# Icons directory
+# Run: node scripts/generate-icons.js to generate SVG icons
+# Then convert to PNG for Chrome extension
+
