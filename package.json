@@ -2,6 +2,7 @@
   "name": "quark-browser-agent",
   "version": "0.1.0",
   "description": "AI-powered Chrome extension that understands website APIs and injects custom scripts",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
