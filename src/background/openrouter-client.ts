@@ -1,5 +1,5 @@
-import type { OpenRouterConfig, SiteContext } from '../shared/types';
-import { buildSystemPrompt, buildUserPrompt } from '../lib/prompt-templates';
+import type { OpenRouterConfig } from '../shared/types';
+import { buildSystemPrompt, buildUserPrompt, type EnhancedContext } from '../lib/prompt-templates';
 
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
@@ -18,13 +18,50 @@ export class OpenRouterClient {
     this.config = config;
   }
 
+  // Check if the model supports vision
+  private isVisionModel(): boolean {
+    const visionModels = [
+      'openai/gpt-4o',
+      'openai/gpt-4-turbo',
+      'openai/gpt-4-vision',
+      'anthropic/claude-3-opus',
+      'anthropic/claude-3-sonnet',
+      'anthropic/claude-3-haiku',
+      'anthropic/claude-sonnet-4',
+      'google/gemini-pro-vision',
+      'google/gemini-1.5-pro',
+      'google/gemini-1.5-flash',
+    ];
+    return visionModels.some(m => this.config.model.includes(m.split('/')[1]));
+  }
+
   async generateScript(
     userPrompt: string,
-    siteContext: SiteContext
+    siteContext: EnhancedContext & { screenshot?: string }
   ): Promise<GenerateScriptResult> {
     try {
       const systemPrompt = buildSystemPrompt(siteContext);
       const fullUserPrompt = buildUserPrompt(userPrompt, siteContext);
+
+      // Build user message content - can be string or array for vision models
+      let userContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+      
+      if (siteContext.screenshot && this.isVisionModel()) {
+        // Use multimodal format for vision models
+        userContent = [
+          { type: 'text', text: fullUserPrompt },
+          { 
+            type: 'image_url', 
+            image_url: { url: siteContext.screenshot } 
+          },
+        ];
+        console.log('[Quark] Sending request with screenshot to vision model');
+      } else {
+        userContent = fullUserPrompt;
+        if (siteContext.screenshot) {
+          console.log('[Quark] Screenshot provided but model may not support vision:', this.config.model);
+        }
+      }
 
       const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
         method: 'POST',
@@ -38,7 +75,7 @@ export class OpenRouterClient {
           model: this.config.model,
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: fullUserPrompt },
+            { role: 'user', content: userContent },
           ],
           temperature: this.config.temperature ?? 0.7,
           max_tokens: this.config.maxTokens ?? 4096,

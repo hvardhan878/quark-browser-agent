@@ -3,6 +3,7 @@ import { OpenRouterClient } from './openrouter-client';
 import { getConfig, saveScript, saveSiteContext, getSiteContext } from '../shared/storage';
 import { getDomainFromUrl, generateId } from '../shared/messaging';
 import type { ExtensionMessage, SiteContext, GeneratedScript, DOMAnalysis } from '../shared/types';
+import type { EnhancedContext } from '../lib/prompt-templates';
 
 // Initialize network interceptor
 const networkInterceptor = new NetworkInterceptor();
@@ -86,7 +87,7 @@ async function handleMessage(
     }
     
     case 'GENERATE_SCRIPT': {
-      const { prompt, context } = message.payload as { prompt: string; context: SiteContext };
+      const { prompt, context } = message.payload as { prompt: string; context: EnhancedContext };
       const config = await getConfig();
       
       if (!config.apiKey) {
@@ -195,6 +196,76 @@ async function handleMessage(
         await chrome.sidePanel.open({ tabId: tab[0].id });
       }
       return { success: true };
+    }
+    
+    case 'START_ELEMENT_PICKER': {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTabId = tabs[0]?.id;
+      
+      if (!currentTabId) {
+        return { success: false, error: 'No active tab' };
+      }
+      
+      try {
+        await chrome.tabs.sendMessage(currentTabId, { type: 'START_ELEMENT_PICKER', payload: {} });
+        return { success: true };
+      } catch (error) {
+        console.error('[Quark Background] Failed to start element picker:', error);
+        return { success: false, error: String(error) };
+      }
+    }
+    
+    case 'STOP_ELEMENT_PICKER': {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTabId = tabs[0]?.id;
+      
+      if (!currentTabId) {
+        return { success: false, error: 'No active tab' };
+      }
+      
+      try {
+        await chrome.tabs.sendMessage(currentTabId, { type: 'STOP_ELEMENT_PICKER', payload: {} });
+        return { success: true };
+      } catch (error) {
+        console.error('[Quark Background] Failed to stop element picker:', error);
+        return { success: false, error: String(error) };
+      }
+    }
+    
+    case 'ELEMENT_SELECTED':
+    case 'ELEMENT_PICKER_CANCELLED': {
+      // These messages are forwarded from content script to sidepanel
+      // The sidepanel listens for them directly
+      return { success: true };
+    }
+    
+    case 'CAPTURE_SNAPSHOT': {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTabId = tabs[0]?.id;
+      
+      if (!currentTabId) {
+        return { success: false, error: 'No active tab' };
+      }
+      
+      try {
+        const result = await chrome.tabs.sendMessage(currentTabId, { type: 'CAPTURE_SNAPSHOT', payload: {} });
+        return result;
+      } catch (error) {
+        console.error('[Quark Background] Failed to capture snapshot:', error);
+        return { success: false, error: String(error) };
+      }
+    }
+    
+    case 'CAPTURE_SCREENSHOT': {
+      try {
+        // Get current window
+        const currentWindow = await chrome.windows.getCurrent();
+        const dataUrl = await chrome.tabs.captureVisibleTab(currentWindow.id!, { format: 'png' });
+        return { success: true, screenshot: dataUrl };
+      } catch (error) {
+        console.error('[Quark Background] Failed to capture screenshot:', error);
+        return { success: false, error: String(error) };
+      }
     }
     
     default:

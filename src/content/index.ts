@@ -1,4 +1,6 @@
 import { DOMAnalyzer } from './dom-analyzer';
+import { activatePicker, deactivatePicker } from './element-picker';
+import { capturePageSnapshot } from './snapshot-capture';
 import type { ExtensionMessage } from '../shared/types';
 
 const domAnalyzer = new DOMAnalyzer();
@@ -27,6 +29,21 @@ async function handleMessage(message: ExtensionMessage): Promise<unknown> {
     case 'INJECT_SCRIPT': {
       const { code } = message.payload as { code: string };
       return executeScript(code);
+    }
+    
+    case 'START_ELEMENT_PICKER': {
+      activatePicker();
+      return { success: true };
+    }
+    
+    case 'STOP_ELEMENT_PICKER': {
+      deactivatePicker();
+      return { success: true };
+    }
+    
+    case 'CAPTURE_SNAPSHOT': {
+      const snapshot = capturePageSnapshot();
+      return { success: true, snapshot };
     }
     
     default:

@@ -129,6 +129,76 @@ export interface OpenRouterModel {
   };
 }
 
+// Element Picker Types
+export interface SelectedElement {
+  selector: string;
+  alternativeSelectors: string[];
+  tagName: string;
+  id?: string;
+  classes: string[];
+  textContent?: string;
+  innerHTML: string;
+  outerHTML: string;
+  attributes: Record<string, string>;
+  boundingRect: {
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  };
+  parentHTML?: string;
+  siblingInfo?: string;
+}
+
+// Page Snapshot Types
+export interface PageSnapshot {
+  url: string;
+  title: string;
+  timestamp: number;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  sections: PageSection[];
+  interactiveElements: InteractiveElementContext[];
+  forms: FormContext[];
+  textContent: string;
+  framework?: string;
+  meta: Record<string, string>;
+}
+
+export interface PageSection {
+  name: string;
+  selector: string;
+  html: string;
+  role?: string;
+}
+
+export interface InteractiveElementContext {
+  type: 'button' | 'link' | 'input' | 'select' | 'toggle' | 'other';
+  selector: string;
+  text?: string;
+  label?: string;
+  html: string;
+  location: 'header' | 'main' | 'sidebar' | 'footer' | 'modal' | 'unknown';
+}
+
+export interface FormContext {
+  selector: string;
+  action?: string;
+  method?: string;
+  fields: FormFieldContext[];
+  html: string;
+}
+
+export interface FormFieldContext {
+  type: string;
+  name?: string;
+  label?: string;
+  placeholder?: string;
+  selector: string;
+}
+
 // Message Types for Extension Communication
 export type MessageType =
   | 'GET_SITE_CONTEXT'
@@ -140,7 +210,13 @@ export type MessageType =
   | 'INJECT_SCRIPT'
   | 'SCRIPT_RESULT'
   | 'GENERATE_SCRIPT'
-  | 'OPEN_SIDEPANEL';
+  | 'OPEN_SIDEPANEL'
+  | 'START_ELEMENT_PICKER'
+  | 'STOP_ELEMENT_PICKER'
+  | 'ELEMENT_SELECTED'
+  | 'ELEMENT_PICKER_CANCELLED'
+  | 'CAPTURE_SNAPSHOT'
+  | 'CAPTURE_SCREENSHOT';
 
 export interface ExtensionMessage<T = unknown> {
   type: MessageType;

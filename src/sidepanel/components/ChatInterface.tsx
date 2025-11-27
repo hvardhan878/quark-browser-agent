@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Play, Copy, Check } from 'lucide-react';
-import type { SiteContext, ChatMessage, GeneratedScript } from '../../shared/types';
+import { Send, Loader2, Play, Copy, Check, Camera, Target, Image } from 'lucide-react';
+import type { SiteContext, ChatMessage, GeneratedScript, SelectedElement, PageSnapshot } from '../../shared/types';
 import { generateId } from '../../shared/messaging';
+import { ElementPicker } from './ElementPicker';
 
 interface ChatInterfaceProps {
   context: SiteContext | null;
@@ -13,6 +14,12 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [pendingScript, setPendingScript] = useState<{ code: string; explanation: string } | null>(null);
+  const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null);
+  const [pageSnapshot, setPageSnapshot] = useState<PageSnapshot | null>(null);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [showTools, setShowTools] = useState(false);
+  const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -32,9 +39,66 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Capture page snapshot for enhanced context
+  const captureSnapshot = async () => {
+    setIsCapturingSnapshot(true);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_SNAPSHOT', payload: {} });
+      if (result?.success && result?.snapshot) {
+        setPageSnapshot(result.snapshot);
+        setMessages(prev => [...prev, {
+          id: generateId(),
+          role: 'assistant',
+          content: '📸 Page snapshot captured! I now have detailed context about the page structure.',
+          timestamp: Date.now(),
+        }]);
+      }
+    } catch (error) {
+      console.error('Failed to capture snapshot:', error);
+    } finally {
+      setIsCapturingSnapshot(false);
+    }
+  };
+
+  // Capture screenshot for vision models
+  const captureScreenshot = async () => {
+    setIsCapturingScreenshot(true);
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_SCREENSHOT', payload: {} });
+      if (result?.success && result?.screenshot) {
+        setScreenshot(result.screenshot);
+        setMessages(prev => [...prev, {
+          id: generateId(),
+          role: 'assistant',
+          content: '🖼️ Screenshot captured! I can now see what the page looks like (requires vision-capable model).',
+          timestamp: Date.now(),
+        }]);
+      } else {
+        setMessages(prev => [...prev, {
+          id: generateId(),
+          role: 'assistant',
+          content: `❌ Failed to capture screenshot: ${result?.error || 'Unknown error'}`,
+          timestamp: Date.now(),
+        }]);
+      }
+    } catch (error) {
+      console.error('Failed to capture screenshot:', error);
+    } finally {
+      setIsCapturingScreenshot(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading || !context) return;
+
+    // Build enhanced context with selected element, snapshot, and screenshot
+    const enhancedContext = {
+      ...context,
+      selectedElement: selectedElement ?? undefined,
+      pageSnapshot: pageSnapshot ?? undefined,
+      screenshot: screenshot ?? undefined,
+    };
 
     const userMessage: ChatMessage = {
       id: generateId(),
@@ -51,7 +115,7 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'GENERATE_SCRIPT',
-        payload: { prompt: userMessage.content, context },
+        payload: { prompt: userMessage.content, context: enhancedContext },
       });
 
       if (response.error) {
@@ -185,15 +249,141 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
         <div ref={messagesEndRef} />
       </div>
 
+      {/* Tools Panel */}
+      {showTools && (
+        <div className="p-4 border-t border-[var(--border-color)] bg-[var(--bg-secondary)]">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Context Tools</h3>
+            <button
+              onClick={() => setShowTools(false)}
+              className="text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            >
+              Hide
+            </button>
+          </div>
+          
+          {/* Element Picker */}
+          <ElementPicker
+            onElementSelected={setSelectedElement}
+            selectedElement={selectedElement}
+            onClearSelection={() => setSelectedElement(null)}
+          />
+          
+          {/* Snapshot Capture */}
+          <div className="mt-3 pt-3 border-t border-[var(--border-subtle)]">
+            <div className="flex gap-2">
+              <button
+                onClick={captureSnapshot}
+                disabled={isCapturingSnapshot}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] transition-colors disabled:opacity-50"
+              >
+                {isCapturingSnapshot ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Camera size={16} />
+                )}
+                {isCapturingSnapshot ? 'Capturing...' : 'Snapshot'}
+              </button>
+              <button
+                onClick={captureScreenshot}
+                disabled={isCapturingScreenshot}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] transition-colors disabled:opacity-50"
+                title="Capture screenshot for vision models (GPT-4o, Claude)"
+              >
+                {isCapturingScreenshot ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Image size={16} />
+                )}
+                {isCapturingScreenshot ? 'Capturing...' : 'Screenshot'}
+              </button>
+            </div>
+            <div className="flex flex-col gap-1 mt-2">
+              {pageSnapshot && (
+                <p className="text-xs text-green-400 text-center">
+                  ✓ Snapshot: {pageSnapshot.interactiveElements.length} elements
+                </p>
+              )}
+              {screenshot && (
+                <p className="text-xs text-blue-400 text-center">
+                  ✓ Screenshot ready for vision models
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Context Status */}
+          <div className="mt-3 pt-3 border-t border-[var(--border-subtle)]">
+            <p className="text-xs text-[var(--text-muted)]">
+              <span className="font-medium">Active Context:</span>
+            </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              {selectedElement && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--accent-primary)]/20 text-[var(--accent-primary)] text-xs rounded">
+                  <Target size={10} />
+                  Element selected
+                </span>
+              )}
+              {pageSnapshot && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-500/20 text-green-400 text-xs rounded">
+                  <Camera size={10} />
+                  Snapshot ready
+                </span>
+              )}
+              {screenshot && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/20 text-blue-400 text-xs rounded">
+                  <Image size={10} />
+                  Screenshot ready
+                </span>
+              )}
+              {!selectedElement && !pageSnapshot && !screenshot && (
+                <span className="text-xs text-[var(--text-muted)]">
+                  No enhanced context. Pick an element, capture a snapshot, or take a screenshot.
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Input */}
       <form onSubmit={handleSubmit} className="p-4 border-t border-[var(--border-color)]">
+        {/* Tools Toggle */}
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            type="button"
+            onClick={() => setShowTools(!showTools)}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+              showTools || selectedElement || pageSnapshot
+                ? 'bg-[var(--accent-primary)]/20 text-[var(--accent-primary)]'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+            }`}
+          >
+            <Target size={12} />
+            Tools
+            {(selectedElement || pageSnapshot) && (
+              <span className="w-1.5 h-1.5 bg-green-400 rounded-full" />
+            )}
+          </button>
+          
+          {selectedElement && (
+            <span className="text-xs text-[var(--text-muted)] truncate max-w-[200px]">
+              📍 {selectedElement.tagName.toLowerCase()}
+              {selectedElement.id ? `#${selectedElement.id}` : ''}
+            </span>
+          )}
+        </div>
+
         <div className="relative">
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Describe what you want to do..."
+            placeholder={selectedElement 
+              ? `Describe what to do with the selected ${selectedElement.tagName.toLowerCase()}...`
+              : "Describe what you want to do..."
+            }
             className="input-field w-full resize-none pr-12"
             rows={2}
             disabled={isLoading}
