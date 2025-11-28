@@ -108,7 +108,8 @@ export default function App() {
         
         {activeTab === 'chat' && (
           <ChatInterface 
-            context={context} 
+            context={context}
+            scripts={scripts}
             onScriptGenerated={handleScriptGenerated}
           />
         )}

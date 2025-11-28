@@ -5,17 +5,17 @@
     "src": "../../../../@crx/manifest",
     "isEntry": true
   },
-  "_prompt-templates-Bb2mpwTw.js": {
-    "file": "assets/prompt-templates-Bb2mpwTw.js",
+  "_prompt-templates-iWWF9tuv.js": {
+    "file": "assets/prompt-templates-iWWF9tuv.js",
     "name": "prompt-templates"
   },
   "src/background/index.ts": {
-    "file": "assets/index.ts-BoiLIGk5.js",
+    "file": "assets/index.ts-Ce3McS-h.js",
     "name": "index.ts",
     "src": "src/background/index.ts",
     "isEntry": true,
     "imports": [
-      "_prompt-templates-Bb2mpwTw.js"
+      "_prompt-templates-iWWF9tuv.js"
     ]
   },
   "src/content/index.ts": {
@@ -25,15 +25,15 @@
     "isEntry": true
   },
   "src/sidepanel/index.html": {
-    "file": "assets/sidepanel-Ch1k2ywT.js",
+    "file": "assets/sidepanel-LX4OhaDA.js",
     "name": "sidepanel",
     "src": "src/sidepanel/index.html",
     "isEntry": true,
     "imports": [
-      "_prompt-templates-Bb2mpwTw.js"
+      "_prompt-templates-iWWF9tuv.js"
     ],
     "css": [
-      "assets/sidepanel-BTnu32q3.css"
+      "assets/sidepanel-DF4A8bc0.css"
     ]
   }
 }

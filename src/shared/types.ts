@@ -199,7 +199,82 @@ export interface FormFieldContext {
   selector: string;
 }
 
-// Message Types for Extension Communication
+// Storage Types
+export interface StorageData {
+  config: OpenRouterConfig;
+  scripts: Record<string, GeneratedScript[]>;
+  conversations: Record<string, Conversation>;
+  siteContexts: Record<string, SiteContext>;
+}
+
+// Export Types
+export interface ExportData {
+  domain: string;
+  exportedAt: number;
+  apis: APICategory[];
+  scripts: GeneratedScript[];
+  documentation: string;
+}
+
+// Agent Types
+export type AgentTaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'awaiting_permission';
+
+export interface AgentTask {
+  id: string;
+  description: string;
+  status: AgentTaskStatus;
+  toolName?: string;
+  toolParams?: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  timestamp: number;
+}
+
+export interface AgentState {
+  id: string;
+  domain: string;
+  tabId: number;
+  status: 'idle' | 'running' | 'paused' | 'completed' | 'error';
+  tasks: AgentTask[];
+  messages: AgentMessage[];
+  currentTaskId?: string;
+  activeScriptId?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
+  timestamp: number;
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+export interface PermissionRequest {
+  id: string;
+  agentId: string;
+  toolName: string;
+  toolParams: Record<string, unknown>;
+  description: string;
+  timestamp: number;
+}
+
+// Extended Message Types
 export type MessageType =
   | 'GET_SITE_CONTEXT'
   | 'SITE_CONTEXT_UPDATED'
@@ -216,28 +291,20 @@ export type MessageType =
   | 'ELEMENT_SELECTED'
   | 'ELEMENT_PICKER_CANCELLED'
   | 'CAPTURE_SNAPSHOT'
-  | 'CAPTURE_SCREENSHOT';
+  | 'CAPTURE_SCREENSHOT'
+  | 'AGENT_START'
+  | 'AGENT_STOP'
+  | 'AGENT_STATE_UPDATE'
+  | 'AGENT_PERMISSION_REQUEST'
+  | 'AGENT_PERMISSION_RESPONSE'
+  | 'VERIFY_ELEMENT'
+  | 'READ_PAGE_CONTENT'
+  | 'GET_AGENT_STATE'
+  | 'CALL_API';
 
 export interface ExtensionMessage<T = unknown> {
   type: MessageType;
   payload: T;
   tabId?: number;
-}
-
-// Storage Types
-export interface StorageData {
-  config: OpenRouterConfig;
-  scripts: Record<string, GeneratedScript[]>;
-  conversations: Record<string, Conversation>;
-  siteContexts: Record<string, SiteContext>;
-}
-
-// Export Types
-export interface ExportData {
-  domain: string;
-  exportedAt: number;
-  apis: APICategory[];
-  scripts: GeneratedScript[];
-  documentation: string;
 }
 

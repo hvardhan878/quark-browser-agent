@@ -2,14 +2,49 @@ import { NetworkInterceptor } from './network-interceptor';
 import { OpenRouterClient } from './openrouter-client';
 import { getConfig, saveScript, saveSiteContext, getSiteContext } from '../shared/storage';
 import { getDomainFromUrl, generateId } from '../shared/messaging';
-import type { ExtensionMessage, SiteContext, GeneratedScript, DOMAnalysis } from '../shared/types';
+import type { ExtensionMessage, SiteContext, GeneratedScript, DOMAnalysis, AgentState, PermissionRequest } from '../shared/types';
 import type { EnhancedContext } from '../lib/prompt-templates';
+import {
+  createAgent,
+  runAgent,
+  stopAgent,
+  getAgentState,
+  handlePermissionResponse,
+  handleElementSelected,
+  setStateUpdateCallback,
+  setPermissionRequestCallback,
+  cleanupAgents,
+} from './agent';
 
 // Initialize network interceptor
 const networkInterceptor = new NetworkInterceptor();
 
 // Site contexts in memory (persisted to storage periodically)
 const siteContexts = new Map<string, SiteContext>();
+
+// Current agent states per tab (for broadcasting updates)
+const tabAgentMap = new Map<number, string>(); // tabId -> agentId
+
+// Set up agent callbacks
+setStateUpdateCallback((state: AgentState) => {
+  // Broadcast state update to sidepanel
+  chrome.runtime.sendMessage({
+    type: 'AGENT_STATE_UPDATE',
+    payload: state,
+  }).catch(() => {
+    // Sidepanel might not be open
+  });
+});
+
+setPermissionRequestCallback((request: PermissionRequest) => {
+  // Broadcast permission request to sidepanel
+  chrome.runtime.sendMessage({
+    type: 'AGENT_PERMISSION_REQUEST',
+    payload: request,
+  }).catch(() => {
+    // Sidepanel might not be open
+  });
+});
 
 // Initialize extension
 chrome.runtime.onInstalled.addListener(() => {
@@ -18,6 +53,9 @@ chrome.runtime.onInstalled.addListener(() => {
   // Set side panel behavior
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 });
+
+// Clean up agents periodically
+setInterval(cleanupAgents, 60000); // Every minute
 
 // Handle action click to open side panel
 chrome.action.onClicked.addListener((tab) => {
@@ -268,10 +306,210 @@ async function handleMessage(
       }
     }
     
+    case 'AGENT_START': {
+      const { userMessage, activeScriptId } = message.payload as { 
+        userMessage: string; 
+        activeScriptId?: string;
+      };
+      
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTab = tabs[0];
+      if (!currentTab?.id || !currentTab.url) {
+        return { success: false, error: 'No active tab' };
+      }
+      
+      const domain = getDomainFromUrl(currentTab.url);
+      
+      // Get active script if specified
+      let activeScript: GeneratedScript | undefined;
+      if (activeScriptId) {
+        const result = await chrome.storage.local.get('scripts');
+        const scripts = result.scripts?.[domain] || [];
+        activeScript = scripts.find((s: GeneratedScript) => s.id === activeScriptId);
+      }
+      
+      // Create or resume agent
+      let existingAgentId = tabAgentMap.get(currentTab.id);
+      let agent = existingAgentId ? getAgentState(existingAgentId) : undefined;
+      
+      let agentId: string;
+      if (!agent || agent.status === 'completed' || agent.status === 'error') {
+        // Create new agent
+        agent = createAgent(domain, currentTab.id, activeScript);
+        agentId = agent.id;
+        tabAgentMap.set(currentTab.id, agentId);
+      } else {
+        agentId = existingAgentId!;
+      }
+      
+      // Get API endpoints for the domain
+      const apiEndpoints = new Map<string, import('../shared/types').APIEndpoint[]>();
+      const endpoints = networkInterceptor.getAPIsForDomain(domain);
+      const allEndpoints = endpoints.flatMap(cat => cat.endpoints);
+      apiEndpoints.set(domain, allEndpoints);
+      
+      // Run the agent (this is async but we return immediately)
+      runAgent(agentId, userMessage, apiEndpoints, activeScript).catch(err => {
+        console.error('[Quark Background] Agent error:', err);
+      });
+      
+      return { success: true, agentId };
+    }
+    
+    case 'AGENT_STOP': {
+      const { agentId } = message.payload as { agentId: string };
+      stopAgent(agentId);
+      return { success: true };
+    }
+    
+    case 'GET_AGENT_STATE': {
+      const { agentId } = message.payload as { agentId?: string };
+      
+      if (agentId) {
+        const state = getAgentState(agentId);
+        return { success: true, state };
+      }
+      
+      // Get agent for current tab
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTab = tabs[0];
+      if (currentTab?.id) {
+        const currentAgentId = tabAgentMap.get(currentTab.id);
+        if (currentAgentId) {
+          const state = getAgentState(currentAgentId);
+          return { success: true, state };
+        }
+      }
+      
+      return { success: true, state: null };
+    }
+    
+    case 'AGENT_PERMISSION_RESPONSE': {
+      const { requestId, approved } = message.payload as { requestId: string; approved: boolean };
+      handlePermissionResponse(requestId, approved);
+      return { success: true };
+    }
+    
+    case 'VERIFY_ELEMENT': {
+      const { selector } = message.payload as { selector: string };
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTabId = tabs[0]?.id;
+      
+      if (!currentTabId) {
+        return { success: false, error: 'No active tab' };
+      }
+      
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: currentTabId },
+          func: (sel: string) => {
+            const elements = document.querySelectorAll(sel);
+            return {
+              exists: elements.length > 0,
+              count: elements.length,
+              elements: Array.from(elements).slice(0, 5).map(el => ({
+                tagName: el.tagName,
+                id: el.id || undefined,
+                textContent: el.textContent?.trim().substring(0, 100),
+              })),
+            };
+          },
+          args: [selector],
+          world: 'MAIN',
+        });
+        return { success: true, data: results[0]?.result };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    }
+    
+    case 'READ_PAGE_CONTENT': {
+      const { selector } = message.payload as { selector?: string };
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const currentTabId = tabs[0]?.id;
+      
+      if (!currentTabId) {
+        return { success: false, error: 'No active tab' };
+      }
+      
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: currentTabId },
+          func: (sel?: string) => {
+            if (sel) {
+              const element = document.querySelector(sel);
+              if (!element) return { found: false };
+              return {
+                found: true,
+                textContent: element.textContent?.trim().substring(0, 5000),
+              };
+            }
+            return {
+              found: true,
+              title: document.title,
+              textContent: document.body.textContent?.trim().substring(0, 5000),
+            };
+          },
+          args: [selector],
+          world: 'MAIN',
+        });
+        return { success: true, data: results[0]?.result };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    }
+    
+    case 'CALL_API': {
+      const { url, method, headers, body } = message.payload as {
+        url: string;
+        method: string;
+        headers?: string;
+        body?: string;
+      };
+      
+      try {
+        const parsedHeaders: Record<string, string> = headers ? JSON.parse(headers) : {};
+        const response = await fetch(url, {
+          method,
+          headers: parsedHeaders,
+          body: method !== 'GET' && body ? body : undefined,
+        });
+        
+        const contentType = response.headers.get('content-type') || '';
+        let responseData: unknown;
+        if (contentType.includes('application/json')) {
+          responseData = await response.json();
+        } else {
+          responseData = await response.text();
+        }
+        
+        return {
+          success: true,
+          data: {
+            status: response.status,
+            statusText: response.statusText,
+            body: responseData,
+          },
+        };
+      } catch (error) {
+        return { success: false, error: String(error) };
+      }
+    }
+    
     default:
       return { error: 'Unknown message type' };
   }
 }
+
+// Handle element selection from content script and forward to agent
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message.type === 'ELEMENT_SELECTED' && sender.tab?.id) {
+    const agentId = tabAgentMap.get(sender.tab.id);
+    if (agentId) {
+      handleElementSelected(agentId, message.payload);
+    }
+  }
+});
 
 // Periodically persist site contexts
 setInterval(async () => {

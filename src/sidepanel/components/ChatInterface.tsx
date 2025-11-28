@@ -1,57 +1,137 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Play, Copy, Check, Camera, Target, Image } from 'lucide-react';
-import type { SiteContext, ChatMessage, GeneratedScript, SelectedElement, PageSnapshot } from '../../shared/types';
-import { generateId } from '../../shared/messaging';
+import { Send, Loader2, Play, Copy, Check, Camera, Target, Image, Bot, ChevronDown, FileCode } from 'lucide-react';
+import type { 
+  SiteContext, 
+  GeneratedScript, 
+  SelectedElement, 
+  PageSnapshot,
+  AgentState,
+  AgentMessage,
+  PermissionRequest
+} from '../../shared/types';
 import { ElementPicker } from './ElementPicker';
+import { AgentTaskList } from './AgentTaskList';
+import { PermissionDialog } from './PermissionDialog';
+import { getConfig, setConfig } from '../../shared/storage';
+
+// Popular models for the dropdown
+const POPULAR_MODELS = [
+  { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4' },
+  { id: 'anthropic/claude-sonnet-4.5', name: 'Claude Sonnet 4.5' },
+  { id: 'openai/gpt-4o', name: 'GPT-4o' },
+  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini' },
+  { id: 'google/gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
+  { id: 'google/gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
+  { id: 'meta-llama/llama-3.1-70b-instruct', name: 'Llama 3.1 70B' },
+];
 
 interface ChatInterfaceProps {
   context: SiteContext | null;
-  onScriptGenerated: (script: GeneratedScript) => void;
+  scripts: GeneratedScript[];
+  onScriptGenerated?: (script: GeneratedScript) => void;
 }
 
-export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+export function ChatInterface({ context, scripts }: ChatInterfaceProps) {
+  // Agent state
+  const [agentState, setAgentState] = useState<AgentState | null>(null);
+  const [permissionRequest, setPermissionRequest] = useState<PermissionRequest | null>(null);
+  
+  // UI state
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [pendingScript, setPendingScript] = useState<{ code: string; explanation: string } | null>(null);
   const [selectedElement, setSelectedElement] = useState<SelectedElement | null>(null);
   const [pageSnapshot, setPageSnapshot] = useState<PageSnapshot | null>(null);
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [showTools, setShowTools] = useState(false);
   const [isCapturingSnapshot, setIsCapturingSnapshot] = useState(false);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
+  
+  // Model and script selection
+  const [currentModel, setCurrentModel] = useState('anthropic/claude-sonnet-4');
+  const [activeScriptId, setActiveScriptId] = useState<string | null>(null);
+  const [showModelSelector, setShowModelSelector] = useState(false);
+  const [showScriptSelector, setShowScriptSelector] = useState(false);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // Load config and conversation on mount
   useEffect(() => {
-    // Add welcome message
-    if (messages.length === 0 && context) {
-      setMessages([{
-        id: generateId(),
-        role: 'assistant',
-        content: `Hi! I'm Quark, your AI website assistant. I can help you customize **${context.domain}** by:\n\n• Modifying the UI or hiding elements\n• Intercepting or blocking API calls\n• Adding new features or automations\n• Extracting data from the page\n\nWhat would you like to do?`,
-        timestamp: Date.now(),
-      }]);
-    }
-  }, [context, messages.length]);
+    const init = async () => {
+      const config = await getConfig();
+      setCurrentModel(config.model);
+      
+      // Try to get existing agent state
+      const result = await chrome.runtime.sendMessage({ 
+        type: 'GET_AGENT_STATE', 
+        payload: {} 
+      });
+      if (result?.state) {
+        setAgentState(result.state);
+      }
+    };
+    init();
+  }, []);
 
+  // Listen for agent updates
+  useEffect(() => {
+    const handleMessage = (message: { type: string; payload: unknown }) => {
+      if (message.type === 'AGENT_STATE_UPDATE') {
+        const state = message.payload as AgentState;
+        setAgentState(state);
+        
+        // Check if a new script was generated
+        if (state.activeScriptId) {
+          setActiveScriptId(state.activeScriptId);
+        }
+      } else if (message.type === 'AGENT_PERMISSION_REQUEST') {
+        setPermissionRequest(message.payload as PermissionRequest);
+      } else if (message.type === 'ELEMENT_SELECTED') {
+        setSelectedElement(message.payload as SelectedElement);
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(handleMessage);
+    return () => chrome.runtime.onMessage.removeListener(handleMessage);
+  }, []);
+
+  // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [agentState?.messages]);
 
-  // Capture page snapshot for enhanced context
+  // Get display messages from agent state
+  const displayMessages = agentState?.messages.filter(m => 
+    m.role === 'user' || (m.role === 'assistant' && m.content)
+  ) || [];
+
+  // Check if agent is running
+  const isLoading = agentState?.status === 'running';
+
+  // Get active script
+  const activeScript = activeScriptId 
+    ? scripts.find(s => s.id === activeScriptId)
+    : null;
+
+  // Handle model change
+  const handleModelChange = async (model: string) => {
+    setCurrentModel(model);
+    await setConfig({ model });
+    setShowModelSelector(false);
+  };
+
+  // Handle script selection
+  const handleScriptSelect = (scriptId: string | null) => {
+    setActiveScriptId(scriptId);
+    setShowScriptSelector(false);
+  };
+
+  // Capture page snapshot
   const captureSnapshot = async () => {
     setIsCapturingSnapshot(true);
     try {
       const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_SNAPSHOT', payload: {} });
       if (result?.success && result?.snapshot) {
         setPageSnapshot(result.snapshot);
-        setMessages(prev => [...prev, {
-          id: generateId(),
-          role: 'assistant',
-          content: '📸 Page snapshot captured! I now have detailed context about the page structure.',
-          timestamp: Date.now(),
-        }]);
       }
     } catch (error) {
       console.error('Failed to capture snapshot:', error);
@@ -60,26 +140,13 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
     }
   };
 
-  // Capture screenshot for vision models
+  // Capture screenshot
   const captureScreenshot = async () => {
     setIsCapturingScreenshot(true);
     try {
       const result = await chrome.runtime.sendMessage({ type: 'CAPTURE_SCREENSHOT', payload: {} });
       if (result?.success && result?.screenshot) {
         setScreenshot(result.screenshot);
-        setMessages(prev => [...prev, {
-          id: generateId(),
-          role: 'assistant',
-          content: '🖼️ Screenshot captured! I can now see what the page looks like (requires vision-capable model).',
-          timestamp: Date.now(),
-        }]);
-      } else {
-        setMessages(prev => [...prev, {
-          id: generateId(),
-          role: 'assistant',
-          content: `❌ Failed to capture screenshot: ${result?.error || 'Unknown error'}`,
-          timestamp: Date.now(),
-        }]);
       }
     } catch (error) {
       console.error('Failed to capture screenshot:', error);
@@ -88,69 +155,56 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
     }
   };
 
+  // Handle form submission
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading || !context) return;
 
-    // Build enhanced context with selected element, snapshot, and screenshot
-    const enhancedContext = {
-      ...context,
-      selectedElement: selectedElement ?? undefined,
-      pageSnapshot: pageSnapshot ?? undefined,
-      screenshot: screenshot ?? undefined,
-    };
-
-    const userMessage: ChatMessage = {
-      id: generateId(),
-      role: 'user',
-      content: input.trim(),
-      timestamp: Date.now(),
-    };
-
-    setMessages(prev => [...prev, userMessage]);
+    const userMessage = input.trim();
     setInput('');
-    setIsLoading(true);
-    setPendingScript(null);
 
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: 'GENERATE_SCRIPT',
-        payload: { prompt: userMessage.content, context: enhancedContext },
+      // Start agent
+      await chrome.runtime.sendMessage({
+        type: 'AGENT_START',
+        payload: { 
+          userMessage,
+          activeScriptId: activeScriptId ?? undefined,
+        },
+      });
+    } catch (err) {
+      console.error('Failed to start agent:', err);
+    }
+  };
+
+  // Handle permission response
+  const handlePermissionResponse = async (approved: boolean) => {
+    if (!permissionRequest) return;
+    
+    await chrome.runtime.sendMessage({
+      type: 'AGENT_PERMISSION_RESPONSE',
+      payload: { requestId: permissionRequest.id, approved },
+    });
+    
+    setPermissionRequest(null);
+  };
+
+  // Execute script manually
+  const executeScript = async (code: string) => {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = tabs[0];
+      
+      if (!tab?.id) return;
+
+      const result = await chrome.runtime.sendMessage({
+        type: 'INJECT_SCRIPT',
+        payload: { code, tabId: tab.id },
       });
 
-      if (response.error) {
-        setMessages(prev => [...prev, {
-          id: generateId(),
-          role: 'assistant',
-          content: `❌ Error: ${response.error}`,
-          timestamp: Date.now(),
-        }]);
-      } else if (response.script) {
-        const script = response.script as GeneratedScript;
-        onScriptGenerated(script);
-
-        setPendingScript({
-          code: script.code,
-          explanation: response.explanation ?? script.description,
-        });
-
-        setMessages(prev => [...prev, {
-          id: generateId(),
-          role: 'assistant',
-          content: response.explanation ?? `Generated script: **${script.name}**\n\n${script.description}`,
-          timestamp: Date.now(),
-          scriptId: script.id,
-        }]);
-      }
+      console.log('Script execution result:', result);
     } catch (err) {
-      setMessages(prev => [...prev, {
-        id: generateId(),
-        role: 'assistant',
-        content: `❌ Failed to generate script: ${err instanceof Error ? err.message : 'Unknown error'}`,
-        timestamp: Date.now(),
-      }]);
-    } finally {
-      setIsLoading(false);
+      console.error('Script execution error:', err);
     }
   };
 
@@ -158,55 +212,6 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
-    }
-  };
-
-  const executeScript = async (code: string) => {
-    console.log('[Quark] executeScript called');
-    
-    try {
-      console.log('[Quark] Querying for active tab...');
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      console.log('[Quark] Tabs found:', tabs);
-      
-      const tab = tabs[0];
-      
-      if (!tab?.id) {
-        console.error('[Quark] No active tab found');
-        setMessages(prev => [...prev, {
-          id: generateId(),
-          role: 'assistant',
-          content: '❌ Could not find active tab. Make sure you have a webpage open.',
-          timestamp: Date.now(),
-        }]);
-        return;
-      }
-
-      console.log('[Quark] Sending INJECT_SCRIPT to tab:', tab.id, 'URL:', tab.url);
-      
-      const result = await chrome.runtime.sendMessage({
-        type: 'INJECT_SCRIPT',
-        payload: { code, tabId: tab.id },
-      });
-
-      console.log('[Quark] Script execution result:', result);
-
-      setMessages(prev => [...prev, {
-        id: generateId(),
-        role: 'assistant',
-        content: result?.success 
-          ? '✅ Script executed successfully!' 
-          : `❌ Execution failed: ${result?.error ?? 'Unknown error'}`,
-        timestamp: Date.now(),
-      }]);
-    } catch (err) {
-      console.error('[Quark] Script execution error:', err);
-      setMessages(prev => [...prev, {
-        id: generateId(),
-        role: 'assistant',
-        content: `❌ Failed to execute: ${err instanceof Error ? err.message : 'Unknown error'}`,
-        timestamp: Date.now(),
-      }]);
     }
   };
 
@@ -223,31 +228,144 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
 
   return (
     <div className="flex flex-col h-full">
+      {/* Header with model and script selector */}
+      <div className="px-4 py-2 border-b border-[var(--border-color)] flex items-center gap-2">
+        {/* Model Selector */}
+        <div className="relative">
+          <button
+            onClick={() => setShowModelSelector(!showModelSelector)}
+            className="flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] transition-colors"
+          >
+            <Bot size={12} />
+            {POPULAR_MODELS.find(m => m.id === currentModel)?.name || currentModel.split('/')[1]}
+            <ChevronDown size={12} />
+          </button>
+          
+          {showModelSelector && (
+            <div className="absolute top-full left-0 mt-1 w-48 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-10 overflow-hidden">
+              {POPULAR_MODELS.map(model => (
+                <button
+                  key={model.id}
+                  onClick={() => handleModelChange(model.id)}
+                  className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-hover)] transition-colors ${
+                    currentModel === model.id ? 'bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]' : 'text-[var(--text-secondary)]'
+                  }`}
+                >
+                  {model.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Script Selector */}
+        {scripts.length > 0 && (
+          <div className="relative">
+            <button
+              onClick={() => setShowScriptSelector(!showScriptSelector)}
+              className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${
+                activeScript
+                  ? 'bg-[var(--accent-primary)]/20 text-[var(--accent-primary)]'
+                  : 'bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)]'
+              }`}
+            >
+              <FileCode size={12} />
+              {activeScript ? activeScript.name.substring(0, 20) : 'New script'}
+              <ChevronDown size={12} />
+            </button>
+            
+            {showScriptSelector && (
+              <div className="absolute top-full left-0 mt-1 w-56 bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-lg shadow-lg z-10 overflow-hidden max-h-64 overflow-y-auto">
+                <button
+                  onClick={() => handleScriptSelect(null)}
+                  className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-hover)] transition-colors ${
+                    !activeScriptId ? 'bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]' : 'text-[var(--text-secondary)]'
+                  }`}
+                >
+                  ✨ New script
+                </button>
+                <div className="border-t border-[var(--border-subtle)]" />
+                {scripts.map(script => (
+                  <button
+                    key={script.id}
+                    onClick={() => handleScriptSelect(script.id)}
+                    className={`w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-hover)] transition-colors ${
+                      activeScriptId === script.id ? 'bg-[var(--accent-primary)]/10 text-[var(--accent-primary)]' : 'text-[var(--text-secondary)]'
+                    }`}
+                  >
+                    <div className="font-medium truncate">{script.name}</div>
+                    <div className="text-[var(--text-muted)] truncate">{script.prompt}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
-        ))}
-
-        {/* Pending script preview */}
-        {pendingScript && (
-          <div className="animate-fade-in">
-            <CodePreview 
-              code={pendingScript.code} 
-              onExecute={() => executeScript(pendingScript.code)}
-            />
+        {/* Welcome message if no conversation */}
+        {displayMessages.length === 0 && !isLoading && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] rounded-2xl px-4 py-2.5 message-assistant">
+              <div className="text-sm whitespace-pre-wrap">
+                Hi! I'm Quark, your AI website assistant. I can help you customize <strong>{context.domain}</strong> by:
+                <br/><br/>
+                • Modifying the UI or hiding elements<br/>
+                • Intercepting or blocking API calls<br/>
+                • Adding new features or automations<br/>
+                • Extracting data from the page
+                <br/><br/>
+                {activeScript ? (
+                  <>Currently editing: <strong>{activeScript.name}</strong></>
+                ) : (
+                  <>What would you like to do?</>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
-        {isLoading && (
+        {displayMessages.map((message) => (
+          <MessageBubble key={message.id} message={message} />
+        ))}
+
+        {/* Agent Task List */}
+        {agentState && agentState.tasks.length > 0 && (
+          <AgentTaskList 
+            tasks={agentState.tasks} 
+            currentTaskId={agentState.currentTaskId}
+          />
+        )}
+
+        {/* Code preview if script was generated */}
+        {agentState?.status === 'completed' && agentState.activeScriptId && (
+          <CodePreviewFromScript 
+            scriptId={agentState.activeScriptId}
+            scripts={scripts}
+            onExecute={executeScript}
+          />
+        )}
+
+        {isLoading && agentState?.tasks.length === 0 && (
           <div className="flex items-center gap-2 text-[var(--text-secondary)]">
             <Loader2 className="w-4 h-4 animate-spin" />
-            <span className="text-sm">Generating script...</span>
+            <span className="text-sm">Agent is thinking...</span>
           </div>
         )}
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Permission Dialog */}
+      {permissionRequest && (
+        <PermissionDialog
+          request={permissionRequest}
+          onApprove={() => handlePermissionResponse(true)}
+          onDeny={() => handlePermissionResponse(false)}
+        />
+      )}
 
       {/* Tools Panel */}
       {showTools && (
@@ -262,14 +380,12 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
             </button>
           </div>
           
-          {/* Element Picker */}
           <ElementPicker
             onElementSelected={setSelectedElement}
             selectedElement={selectedElement}
             onClearSelection={() => setSelectedElement(null)}
           />
           
-          {/* Snapshot Capture */}
           <div className="mt-3 pt-3 border-t border-[var(--border-subtle)]">
             <div className="flex gap-2">
               <button
@@ -277,46 +393,18 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
                 disabled={isCapturingSnapshot}
                 className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] transition-colors disabled:opacity-50"
               >
-                {isCapturingSnapshot ? (
-                  <Loader2 size={16} className="animate-spin" />
-                ) : (
-                  <Camera size={16} />
-                )}
+                {isCapturingSnapshot ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
                 {isCapturingSnapshot ? 'Capturing...' : 'Snapshot'}
               </button>
               <button
                 onClick={captureScreenshot}
                 disabled={isCapturingScreenshot}
                 className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] transition-colors disabled:opacity-50"
-                title="Capture screenshot for vision models (GPT-4o, Claude)"
               >
-                {isCapturingScreenshot ? (
-                  <Loader2 size={16} className="animate-spin" />
-                ) : (
-                  <Image size={16} />
-                )}
+                {isCapturingScreenshot ? <Loader2 size={16} className="animate-spin" /> : <Image size={16} />}
                 {isCapturingScreenshot ? 'Capturing...' : 'Screenshot'}
               </button>
             </div>
-            <div className="flex flex-col gap-1 mt-2">
-              {pageSnapshot && (
-                <p className="text-xs text-green-400 text-center">
-                  ✓ Snapshot: {pageSnapshot.interactiveElements.length} elements
-                </p>
-              )}
-              {screenshot && (
-                <p className="text-xs text-blue-400 text-center">
-                  ✓ Screenshot ready for vision models
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Context Status */}
-          <div className="mt-3 pt-3 border-t border-[var(--border-subtle)]">
-            <p className="text-xs text-[var(--text-muted)]">
-              <span className="font-medium">Active Context:</span>
-            </p>
             <div className="flex flex-wrap gap-2 mt-2">
               {selectedElement && (
                 <span className="inline-flex items-center gap-1 px-2 py-1 bg-[var(--accent-primary)]/20 text-[var(--accent-primary)] text-xs rounded">
@@ -336,11 +424,6 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
                   Screenshot ready
                 </span>
               )}
-              {!selectedElement && !pageSnapshot && !screenshot && (
-                <span className="text-xs text-[var(--text-muted)]">
-                  No enhanced context. Pick an element, capture a snapshot, or take a screenshot.
-                </span>
-              )}
             </div>
           </div>
         </div>
@@ -348,7 +431,6 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
 
       {/* Input */}
       <form onSubmit={handleSubmit} className="p-4 border-t border-[var(--border-color)]">
-        {/* Tools Toggle */}
         <div className="flex items-center gap-2 mb-2">
           <button
             type="button"
@@ -380,9 +462,12 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={selectedElement 
-              ? `Describe what to do with the selected ${selectedElement.tagName.toLowerCase()}...`
-              : "Describe what you want to do..."
+            placeholder={
+              activeScript 
+                ? `How should I modify "${activeScript.name}"?`
+                : selectedElement 
+                  ? `Describe what to do with the selected ${selectedElement.tagName.toLowerCase()}...`
+                  : "Describe what you want to do..."
             }
             className="input-field w-full resize-none pr-12"
             rows={2}
@@ -404,7 +489,7 @@ export function ChatInterface({ context, onScriptGenerated }: ChatInterfaceProps
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message }: { message: AgentMessage }) {
   const isUser = message.role === 'user';
 
   return (
@@ -426,18 +511,29 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 }
 
 function formatMessage(content: string): string {
-  // Simple markdown-like formatting
   return content
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/`(.*?)`/g, '<code class="bg-black/20 px-1 rounded">$1</code>')
+    .replace(/```(?:javascript|js)?\n([\s\S]*?)```/g, '<pre class="bg-black/20 p-2 rounded mt-2 overflow-x-auto text-xs"><code>$1</code></pre>')
     .replace(/\n/g, '<br/>');
 }
 
-function CodePreview({ code, onExecute }: { code: string; onExecute: () => void }) {
+function CodePreviewFromScript({ 
+  scriptId, 
+  scripts,
+  onExecute 
+}: { 
+  scriptId: string;
+  scripts: GeneratedScript[];
+  onExecute: (code: string) => void;
+}) {
   const [copied, setCopied] = useState(false);
+  const script = scripts.find(s => s.id === scriptId);
+  
+  if (!script) return null;
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(code);
+    await navigator.clipboard.writeText(script.code);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -445,7 +541,9 @@ function CodePreview({ code, onExecute }: { code: string; onExecute: () => void 
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs font-medium text-[var(--text-secondary)]">Generated Code</span>
+        <span className="text-xs font-medium text-[var(--text-secondary)]">
+          Generated: {script.name}
+        </span>
         <div className="flex gap-2">
           <button
             onClick={handleCopy}
@@ -455,7 +553,7 @@ function CodePreview({ code, onExecute }: { code: string; onExecute: () => void 
             {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} className="text-[var(--text-muted)]" />}
           </button>
           <button
-            onClick={onExecute}
+            onClick={() => onExecute(script.code)}
             className="flex items-center gap-1.5 px-3 py-1 bg-green-600 hover:bg-green-500 text-white text-xs font-medium rounded-lg transition-colors"
           >
             <Play size={12} />
@@ -464,9 +562,8 @@ function CodePreview({ code, onExecute }: { code: string; onExecute: () => void 
         </div>
       </div>
       <pre className="code-block text-xs max-h-[200px] overflow-auto">
-        <code>{code}</code>
+        <code>{script.code}</code>
       </pre>
     </div>
   );
 }
-

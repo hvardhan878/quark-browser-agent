@@ -28,6 +28,7 @@ export class OpenRouterClient {
       'anthropic/claude-3-sonnet',
       'anthropic/claude-3-haiku',
       'anthropic/claude-sonnet-4',
+      'anthropic/claude-sonnet-4.5',
       'google/gemini-pro-vision',
       'google/gemini-1.5-pro',
       'google/gemini-1.5-flash',
