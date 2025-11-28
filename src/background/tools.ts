@@ -413,13 +413,41 @@ export class ToolExecutor {
         target: { tabId: this.tabId },
         func: (scriptCode: string) => {
           try {
+            // Method 1: Try using Blob URL (bypasses Trusted Types)
+            const blob = new Blob([scriptCode], { type: 'application/javascript' });
+            const url = URL.createObjectURL(blob);
             const script = document.createElement('script');
-            script.textContent = scriptCode;
-            (document.head || document.documentElement).appendChild(script);
-            script.remove();
-            return { success: true };
+            script.src = url;
+            
+            return new Promise<{ success: boolean; error?: string }>((resolve) => {
+              script.onload = () => {
+                URL.revokeObjectURL(url);
+                script.remove();
+                resolve({ success: true });
+              };
+              script.onerror = () => {
+                URL.revokeObjectURL(url);
+                script.remove();
+                // Fallback to direct execution if blob fails
+                try {
+                  // Method 2: Use Function constructor as fallback
+                  const fn = new Function(scriptCode);
+                  fn();
+                  resolve({ success: true });
+                } catch (fallbackError) {
+                  resolve({ success: false, error: `Blob failed, fallback failed: ${String(fallbackError)}` });
+                }
+              };
+              (document.head || document.documentElement).appendChild(script);
+            });
           } catch (error) {
-            return { success: false, error: String(error) };
+            // Method 3: Last resort - try eval in a try-catch
+            try {
+              (0, eval)(scriptCode);
+              return { success: true };
+            } catch (evalError) {
+              return { success: false, error: String(error) + ' | Eval also failed: ' + String(evalError) };
+            }
           }
         },
         args: [code],

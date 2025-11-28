@@ -189,28 +189,52 @@ async function handleMessage(
           };
         }
         
-        // Use script element injection to bypass Trusted Types restrictions
+        // Use Blob URL injection to bypass Trusted Types restrictions
         const results = await chrome.scripting.executeScript({
           target: { tabId: execTabId },
           func: (scriptCode: string) => {
+            console.log('[Quark Injected] Injecting script, code length:', scriptCode.length);
+            
             try {
-              console.log('[Quark Injected] Creating script element, code length:', scriptCode.length);
-              
-              // Create a script element - this bypasses Trusted Types CSP
+              // Method 1: Blob URL (bypasses Trusted Types)
+              const blob = new Blob([scriptCode], { type: 'application/javascript' });
+              const url = URL.createObjectURL(blob);
               const script = document.createElement('script');
-              script.textContent = scriptCode;
+              script.src = url;
               
-              // Inject into the document
-              (document.head || document.documentElement).appendChild(script);
-              
-              // Remove the script element after execution (optional cleanup)
-              script.remove();
-              
-              console.log('[Quark Injected] Script executed successfully');
-              return { success: true };
+              return new Promise<{ success: boolean; error?: string }>((resolve) => {
+                script.onload = () => {
+                  URL.revokeObjectURL(url);
+                  script.remove();
+                  console.log('[Quark Injected] Script executed successfully via Blob URL');
+                  resolve({ success: true });
+                };
+                script.onerror = () => {
+                  URL.revokeObjectURL(url);
+                  script.remove();
+                  // Fallback to Function constructor
+                  try {
+                    const fn = new Function(scriptCode);
+                    fn();
+                    console.log('[Quark Injected] Script executed via Function fallback');
+                    resolve({ success: true });
+                  } catch (fallbackError) {
+                    console.error('[Quark Injected] All methods failed:', fallbackError);
+                    resolve({ success: false, error: String(fallbackError) });
+                  }
+                };
+                (document.head || document.documentElement).appendChild(script);
+              });
             } catch (error) {
-              console.error('[Quark Injected] Script execution error:', error);
-              return { success: false, error: String(error) };
+              // Last resort: try eval
+              try {
+                (0, eval)(scriptCode);
+                console.log('[Quark Injected] Script executed via eval fallback');
+                return { success: true };
+              } catch (evalError) {
+                console.error('[Quark Injected] Script execution error:', error, evalError);
+                return { success: false, error: String(error) };
+              }
             }
           },
           args: [code],
