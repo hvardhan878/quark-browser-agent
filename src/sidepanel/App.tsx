@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Settings, MessageSquare, Code, Database } from 'lucide-react';
 import { ChatInterface } from './components/ChatInterface';
 import { ApiExplorer } from './components/ApiExplorer';
 import { ScriptManager } from './components/ScriptManager';
 import { SettingsPanel } from './components/SettingsPanel';
 import { useSiteContext } from './hooks/useSiteContext';
-import type { GeneratedScript } from '../shared/types';
+import type { GeneratedScript, AgentState } from '../shared/types';
 
 type Tab = 'chat' | 'apis' | 'scripts' | 'settings';
 
@@ -14,14 +14,7 @@ export default function App() {
   const { context, loading, error, refresh } = useSiteContext();
   const [scripts, setScripts] = useState<GeneratedScript[]>([]);
 
-  useEffect(() => {
-    // Load scripts for current domain
-    if (context?.domain) {
-      loadScripts(context.domain);
-    }
-  }, [context?.domain]);
-
-  const loadScripts = async (domain: string) => {
+  const loadScripts = useCallback(async (domain: string) => {
     try {
       const result = await chrome.storage.local.get('scripts');
       const allScripts = result.scripts ?? {};
@@ -29,10 +22,40 @@ export default function App() {
     } catch (err) {
       console.error('Failed to load scripts:', err);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    // Load scripts for current domain
+    if (context?.domain) {
+      loadScripts(context.domain);
+    }
+  }, [context?.domain, loadScripts]);
+
+  // Listen for agent state updates to reload scripts when new ones are saved
+  useEffect(() => {
+    const handleMessage = (message: { type: string; payload: unknown }) => {
+      if (message.type === 'AGENT_STATE_UPDATE') {
+        const state = message.payload as AgentState;
+        // Reload scripts when agent completes or has a new script
+        if (state.activeScriptId && context?.domain) {
+          console.log('[Quark App] Agent has new script, reloading scripts');
+          loadScripts(context.domain);
+        }
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(handleMessage);
+    return () => chrome.runtime.onMessage.removeListener(handleMessage);
+  }, [context?.domain, loadScripts]);
 
   const handleScriptGenerated = (script: GeneratedScript) => {
-    setScripts(prev => [...prev, script]);
+    setScripts(prev => {
+      // Check if script already exists (avoid duplicates)
+      if (prev.some(s => s.id === script.id)) {
+        return prev.map(s => s.id === script.id ? script : s);
+      }
+      return [...prev, script];
+    });
   };
 
   const handleScriptUpdated = (updatedScript: GeneratedScript) => {

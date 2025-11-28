@@ -10,7 +10,7 @@
     "name": "prompt-templates"
   },
   "src/background/index.ts": {
-    "file": "assets/index.ts-Ce3McS-h.js",
+    "file": "assets/index.ts-DIBe_6cA.js",
     "name": "index.ts",
     "src": "src/background/index.ts",
     "isEntry": true,
@@ -25,7 +25,7 @@
     "isEntry": true
   },
   "src/sidepanel/index.html": {
-    "file": "assets/sidepanel-LX4OhaDA.js",
+    "file": "assets/sidepanel-B59ROPJ4.js",
     "name": "sidepanel",
     "src": "src/sidepanel/index.html",
     "isEntry": true,

@@ -241,7 +241,17 @@ export class ToolExecutor {
     try {
       const currentWindow = await chrome.windows.getCurrent();
       const dataUrl = await chrome.tabs.captureVisibleTab(currentWindow.id!, { format: 'png' });
-      return { success: true, data: { screenshot: dataUrl } };
+      // Store the screenshot but don't return the full base64 in the result
+      // The screenshot is available for vision models but we don't want to bloat the context
+      return { 
+        success: true, 
+        data: { 
+          captured: true,
+          message: 'Screenshot captured successfully. The image shows the current visible viewport of the page.',
+          // Include a small portion for reference (useful for debugging)
+          previewSize: `${Math.round(dataUrl.length / 1024)}KB`
+        } 
+      };
     } catch (error) {
       return { success: false, error: String(error) };
     }

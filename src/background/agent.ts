@@ -214,10 +214,23 @@ export function handlePermissionResponse(requestId: string, approved: boolean): 
   }
 }
 
+// Models that support tool calling
+const TOOL_CAPABLE_MODELS = [
+  'anthropic/claude',
+  'openai/gpt-4',
+  'openai/gpt-3.5',
+  'google/gemini',
+  'mistralai/mistral',
+];
+
+function isToolCapableModel(model: string): boolean {
+  return TOOL_CAPABLE_MODELS.some(prefix => model.startsWith(prefix));
+}
+
 // Call OpenRouter with tool support
 async function callOpenRouter(
   config: OpenRouterConfig,
-  messages: Array<{ role: string; content: string; tool_calls?: unknown; tool_call_id?: string }>,
+  messages: Array<{ role: string; content: string | null; tool_calls?: unknown; tool_call_id?: string }>,
   tools: ReturnType<typeof getToolsForOpenRouter>
 ): Promise<{
   content?: string;
@@ -225,6 +238,45 @@ async function callOpenRouter(
   error?: string;
 }> {
   try {
+    // Check if model supports tools
+    const useTools = isToolCapableModel(config.model);
+    
+    // Clean up messages for API
+    const cleanMessages = messages.map(m => {
+      const msg: Record<string, unknown> = {
+        role: m.role,
+        content: m.content ?? '',
+      };
+      
+      if (m.tool_calls) {
+        msg.tool_calls = m.tool_calls;
+      }
+      if (m.tool_call_id) {
+        msg.tool_call_id = m.tool_call_id;
+      }
+      
+      return msg;
+    });
+
+    const requestBody: Record<string, unknown> = {
+      model: config.model,
+      messages: cleanMessages,
+      temperature: config.temperature ?? 0.7,
+      max_tokens: config.maxTokens ?? 4096,
+    };
+
+    // Only include tools if model supports them
+    if (useTools && tools.length > 0) {
+      requestBody.tools = tools;
+      requestBody.tool_choice = 'auto';
+    }
+
+    console.log('[Quark Agent] Calling OpenRouter:', {
+      model: config.model,
+      messageCount: cleanMessages.length,
+      hasTools: useTools,
+    });
+
     const response = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -233,21 +285,20 @@ async function callOpenRouter(
         'HTTP-Referer': 'chrome-extension://quark-browser-agent',
         'X-Title': 'Quark Browser Agent',
       },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        tools,
-        tool_choice: 'auto',
-        temperature: config.temperature ?? 0.7,
-        max_tokens: config.maxTokens ?? 4096,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      return { 
-        error: `API Error: ${response.status} - ${errorData.error?.message ?? response.statusText}` 
-      };
+      const errorText = await response.text();
+      let errorMessage = `API Error: ${response.status}`;
+      try {
+        const errorData = JSON.parse(errorText);
+        errorMessage += ` - ${errorData.error?.message ?? errorData.message ?? response.statusText}`;
+      } catch {
+        errorMessage += ` - ${errorText.substring(0, 200)}`;
+      }
+      console.error('[Quark Agent] API Error:', errorMessage);
+      return { error: errorMessage };
     }
 
     const data = await response.json();
@@ -261,16 +312,25 @@ async function callOpenRouter(
     
     // Check for tool calls
     if (message.tool_calls && message.tool_calls.length > 0) {
-      const toolCalls: ToolCall[] = message.tool_calls.map((tc: { id: string; function: { name: string; arguments: string } }) => ({
-        id: tc.id,
-        name: tc.function.name,
-        arguments: JSON.parse(tc.function.arguments || '{}'),
-      }));
+      const toolCalls: ToolCall[] = message.tool_calls.map((tc: { id: string; function: { name: string; arguments: string } }) => {
+        let args = {};
+        try {
+          args = JSON.parse(tc.function.arguments || '{}');
+        } catch (e) {
+          console.warn('[Quark Agent] Failed to parse tool arguments:', tc.function.arguments);
+        }
+        return {
+          id: tc.id,
+          name: tc.function.name,
+          arguments: args,
+        };
+      });
       return { toolCalls, content: message.content };
     }
 
     return { content: message.content };
   } catch (error) {
+    console.error('[Quark Agent] Request error:', error);
     return { error: `Request failed: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
@@ -314,34 +374,77 @@ export async function runAgent(
   const toolExecutor = new ToolExecutor(agent.tabId, apiEndpoints);
   const tools = getToolsForOpenRouter();
 
-  // Prepare messages for API
-  const apiMessages = agent.messages.map(m => {
-    if (m.role === 'tool') {
-      return {
-        role: 'tool' as const,
-        content: m.content,
-        tool_call_id: m.toolCallId,
-      };
+  // Truncate large content for API messages
+  const truncateToolResult = (content: string, maxLength = 10000): string => {
+    if (content.length <= maxLength) return content;
+    
+    // Try to parse as JSON and truncate intelligently
+    try {
+      const parsed = JSON.parse(content);
+      
+      // Handle screenshot data - don't send base64 back
+      if (parsed.data?.screenshot) {
+        parsed.data.screenshot = '[BASE64_IMAGE_CAPTURED - not included in context]';
+      }
+      
+      // Handle snapshot data - truncate long HTML
+      if (parsed.data?.sections) {
+        parsed.data.sections = parsed.data.sections.map((s: { html?: string; [key: string]: unknown }) => ({
+          ...s,
+          html: s.html?.substring(0, 500) + (s.html && s.html.length > 500 ? '...' : ''),
+        }));
+      }
+      
+      // Handle large data fields
+      if (parsed.data && typeof parsed.data === 'object') {
+        for (const key of Object.keys(parsed.data)) {
+          if (typeof parsed.data[key] === 'string' && parsed.data[key].length > 1000) {
+            parsed.data[key] = parsed.data[key].substring(0, 1000) + '... [truncated]';
+          }
+        }
+      }
+      
+      const truncated = JSON.stringify(parsed);
+      if (truncated.length <= maxLength) return truncated;
+      
+      return truncated.substring(0, maxLength) + '... [truncated]';
+    } catch {
+      return content.substring(0, maxLength) + '... [truncated]';
     }
-    if (m.toolCalls) {
+  };
+
+  // Prepare messages for API - helper function
+  const prepareApiMessages = () => {
+    return agent.messages.map(m => {
+      if (m.role === 'tool') {
+        return {
+          role: 'tool' as const,
+          content: truncateToolResult(m.content || 'No result'),
+          tool_call_id: m.toolCallId,
+        };
+      }
+      if (m.toolCalls && m.toolCalls.length > 0) {
+        return {
+          role: 'assistant' as const,
+          content: m.content || null, // Some APIs expect null for tool call messages
+          tool_calls: m.toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
+        };
+      }
       return {
         role: m.role as 'user' | 'assistant' | 'system',
         content: m.content || '',
-        tool_calls: m.toolCalls.map(tc => ({
-          id: tc.id,
-          type: 'function',
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments),
-          },
-        })),
       };
-    }
-    return {
-      role: m.role as 'user' | 'assistant' | 'system',
-      content: m.content,
-    };
-  });
+    });
+  };
+
+  let apiMessages = prepareApiMessages();
 
   // Agent loop - continue until we get a final response without tool calls
   let iterationCount = 0;
@@ -350,6 +453,9 @@ export async function runAgent(
   while (agent.status === 'running' && iterationCount < maxIterations) {
     iterationCount++;
     console.log(`[Quark Agent] Iteration ${iterationCount}`);
+
+    // Rebuild apiMessages from agent.messages each iteration
+    apiMessages = prepareApiMessages();
 
     // Call LLM
     const thinkingTask = addTask(agent, 'Thinking...', 'llm');
@@ -376,18 +482,6 @@ export async function runAgent(
         timestamp: Date.now(),
       };
       agent.messages.push(assistantMsg);
-      apiMessages.push({
-        role: 'assistant',
-        content: response.content || '',
-        tool_calls: response.toolCalls.map(tc => ({
-          id: tc.id,
-          type: 'function',
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments),
-          },
-        })),
-      });
 
       // Execute each tool call
       for (const toolCall of response.toolCalls) {
@@ -433,11 +527,6 @@ export async function runAgent(
               timestamp: Date.now(),
             };
             agent.messages.push(toolResultMsg);
-            apiMessages.push({
-              role: 'tool',
-              content: toolResultMsg.content,
-              tool_call_id: toolCall.id,
-            });
             
             continue;
           }
@@ -452,6 +541,28 @@ export async function runAgent(
           updateTaskStatus(agent, task.id, 'awaiting_permission');
           // The element selection will come through a message
           // For now, we'll just note that we're waiting
+        }
+        
+        // Handle inject_script - save the script when successfully injected
+        if (toolCall.name === 'inject_script' && result.success) {
+          const args = toolCall.arguments as { code: string; description?: string };
+          const script: GeneratedScript = {
+            id: activeScript?.id || generateId(),
+            name: args.description?.substring(0, 50) || 'Injected Script',
+            description: args.description || userMessage,
+            code: args.code,
+            domain: agent.domain,
+            prompt: userMessage,
+            model: config.model,
+            createdAt: activeScript?.createdAt || Date.now(),
+            updatedAt: Date.now(),
+            enabled: true,
+            autoRun: false,
+          };
+          
+          await saveScript(script);
+          agent.activeScriptId = script.id;
+          console.log('[Quark Agent] Script saved:', script.id);
         }
         
         updateTaskStatus(
@@ -471,11 +582,6 @@ export async function runAgent(
           timestamp: Date.now(),
         };
         agent.messages.push(toolResultMsg);
-        apiMessages.push({
-          role: 'tool',
-          content: toolResultMsg.content,
-          tool_call_id: toolCall.id,
-        });
       }
 
       notifyStateUpdate(agent);
@@ -484,6 +590,8 @@ export async function runAgent(
     }
 
     // No tool calls - this is the final response
+    console.log('[Quark Agent] Final response received, completing agent');
+    
     if (response.content) {
       const finalMsg: AgentMessage = {
         id: generateId(),
@@ -493,36 +601,43 @@ export async function runAgent(
       };
       agent.messages.push(finalMsg);
       
-      // Check if the response contains a script to save
-      const codeMatch = response.content.match(/```(?:javascript|js)?\n([\s\S]*?)```/);
-      if (codeMatch) {
-        const code = codeMatch[1].trim();
-        const nameMatch = response.content.match(/(?:Script Name|Name):\s*(.+)/i);
-        const name = nameMatch?.[1] || 'Generated Script';
-        
-        // Save the script
-        const script: GeneratedScript = {
-          id: activeScript?.id || generateId(),
-          name,
-          description: userMessage,
-          code,
-          domain: agent.domain,
-          prompt: userMessage,
-          model: config.model,
-          createdAt: activeScript?.createdAt || Date.now(),
-          updatedAt: Date.now(),
-          enabled: true,
-          autoRun: false,
-        };
-        
-        await saveScript(script);
-        agent.activeScriptId = script.id;
+      // Check if the response contains a script to save (only if we haven't already saved via inject_script)
+      if (!agent.activeScriptId) {
+        const codeMatch = response.content.match(/```(?:javascript|js)?\n([\s\S]*?)```/);
+        if (codeMatch) {
+          const code = codeMatch[1].trim();
+          const nameMatch = response.content.match(/(?:Script Name|Name):\s*(.+)/i);
+          const name = nameMatch?.[1] || 'Generated Script';
+          
+          // Save the script
+          const script: GeneratedScript = {
+            id: activeScript?.id || generateId(),
+            name,
+            description: userMessage,
+            code,
+            domain: agent.domain,
+            prompt: userMessage,
+            model: config.model,
+            createdAt: activeScript?.createdAt || Date.now(),
+            updatedAt: Date.now(),
+            enabled: true,
+            autoRun: false,
+          };
+          
+          await saveScript(script);
+          agent.activeScriptId = script.id;
+          console.log('[Quark Agent] Script saved from response:', script.id);
+        }
       }
+    } else {
+      // Even if there's no content, mark as completed
+      console.log('[Quark Agent] No content in final response');
     }
 
     // Mark as completed
     agent.status = 'completed';
     notifyStateUpdate(agent);
+    console.log('[Quark Agent] Agent completed successfully');
     break;
   }
 
