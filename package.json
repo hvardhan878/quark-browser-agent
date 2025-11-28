@@ -11,10 +11,10 @@
     "icons": "node scripts/generate-icons.js"
   },
   "dependencies": {
+    "lucide-react": "^0.460.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "zustand": "^4.5.5",
-    "lucide-react": "^0.460.0"
+    "zustand": "^4.5.5"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.0.0-beta.28",
@@ -24,9 +24,9 @@
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
+    "sharp": "^0.34.5",
     "tailwindcss": "^3.4.15",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }
 }
-

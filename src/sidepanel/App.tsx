@@ -71,8 +71,12 @@ export default function App() {
       {/* Header */}
       <header className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)]">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
-            <span className="text-white font-bold text-sm">Q</span>
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden">
+            <img 
+              src={chrome.runtime.getURL('icons/icon32.png')} 
+              alt="Quark" 
+              className="w-full h-full"
+            />
           </div>
           <div>
             <h1 className="text-sm font-semibold text-[var(--text-primary)]">Quark</h1>
