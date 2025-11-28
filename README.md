@@ -2,6 +2,17 @@
 
 AI-powered Chrome extension that understands website APIs and allows you to inject custom scripts via natural language prompts.
 
+## Demo
+
+See Quark in action: understand website APIs, generate scripts with AI, and customize any website through natural language.
+
+<video width="100%" controls>
+  <source src="demo/demo-quark.mov" type="video/quicktime">
+  Your browser does not support the video tag. <a href="demo/demo-quark.mov">Download the video</a> to view it.
+</video>
+
+> **Note**: If the video doesn't play inline, [download it directly](demo/demo-quark.mov). For best GitHub compatibility, convert to MP4 format - GitHub will auto-embed MP4 videos.
+
 ## Features
 
 - **API Discovery**: Automatically captures and categorizes network requests to understand website APIs
